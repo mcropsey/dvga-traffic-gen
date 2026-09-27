@@ -1,0 +1,128 @@
+# ============================================================================
+# dvga_schema.graphql — reference SDL for the DVGA GraphQL API
+# ----------------------------------------------------------------------------
+# Confirmed against a live DVGA instance (github.com/dolevf/Damn-Vulnerable-
+# GraphQL-Application) via __schema introspection. Field/argument names are
+# CAMELCASE exactly as the running instance exposes them — use these names in
+# your queries, or the server will reject them.
+#
+# NOTE on auth: DVGA's `me(token:)` takes the JWT as a GraphQL ARGUMENT, and
+# get_identity() decodes with verify_signature: False reading the `identity`
+# claim. There is no Authorization-header auth on this app.
+#
+# NOTE on naming: GraphQL arguments/fields on this build are camelCase
+# (e.g. createUser's argument is `userData`, login returns `accessToken`/
+# `refreshToken`, PasteObject exposes `userAgent`/`ipAddr`/`ownerId`).
+# ============================================================================
+
+type Query {
+  # "System Load: ..." string. Gated to "systemHealth denied" in hard mode.
+  systemHealth: String
+
+  # List of pastes. `filter` is interpolated straight into a SQL string
+  #   -> SQL injection sink. `public` narrows to public pastes. `limit` caps rows.
+  pastes(public: Boolean, limit: Int, filter: String): [PasteObject]
+
+  # A single paste by id (no ownership check -> BOLA read). `title` alt-lookup.
+  paste(id: Int, title: String): PasteObject
+
+  # All users. `password` resolves to the real value only when the caller's
+  # decoded `identity` claim == "admin" (JWT forgery -> privilege escalation).
+  users(id: Int): [UserObject]
+
+  # Keyword search across pastes and users (Union type).
+  search(keyword: String): [SearchResult!]
+
+  # Current user from a JWT. Token is a GraphQL argument, signature NOT verified.
+  me(token: String): UserObject
+
+  # Read a burn-once paste and mark it burned.
+  readAndBurn(id: Int): PasteObject
+
+  # Recent GraphQL audit log entries.
+  audits: [AuditObject]
+
+  # DESTRUCTIVE: deletes every paste. No arguments. (Excluded from the
+  # discovery live-pass so it is never exercised accidentally.)
+  deleteAllPastes: Boolean
+
+  # "OS Command Injection #1" — always available, no auth, no mode gate:
+  #   helpers.run_cmd('ps {}'.format(arg))  ->  os.popen(...)
+  systemDebug(arg: String): String
+
+  # "OS Command Injection #2" — gated by admin creds + allowed_cmds(cmd):
+  #   easy mode: any cmd;  hard mode: echo/ps/whoami/tail only.
+  systemDiagnostics(username: String, password: String, cmd: String): String
+
+  # Expensive operation (cost = MAX_COST). Used to trigger the Cost middleware
+  # in hard mode. NO arguments on this build.
+  systemUpdate: String
+}
+
+type Mutations {
+  createPaste(burn: Boolean, content: String, public: Boolean, title: String): CreatePaste
+  importPaste(host: String, path: String, port: Int, scheme: String): ImportPaste   # SSRF sink: fetch remote URL
+  uploadPaste(content: String, filename: String): UploadPaste                       # path-traversal sink: save_file(filename, content)
+  editPaste(content: String, id: Int, title: String): EditPaste                     # BOLA write: no ownership check
+  deletePaste(id: Int): DeletePaste                                                 # BOLA delete: no ownership check
+  createUser(userData: UserInput): CreateUser                                       # arg is the `userData` input object
+  login(password: String, username: String): Login
+}
+
+# Input object for createUser.
+input UserInput {
+  username: String!
+  email:    String!
+  password: String!
+}
+
+type UserObject {
+  id: Int!
+  username(capitalize: Boolean): String
+  password: String   # real value only when decoded identity == "admin", else "******"
+}
+
+type PasteObject {
+  id: Int!
+  title: String
+  content: String
+  public: Boolean
+  userAgent: String
+  ipAddr: String
+  ownerId: Int
+  burn: Boolean
+  owner: OwnerObject   # Paste -> Owner (cycle edge, used for deep recursion)
+}
+
+type OwnerObject {
+  id: Int!
+  name: String
+  paste: PasteObject    # Owner -> Paste (cycle edge, used for deep recursion)
+  pastes: [PasteObject] # Owner -> [Paste] (plural cycle edge)
+}
+
+type AuditObject {
+  id: Int!
+  gqloperation: String
+  gqlquery: String
+  timestamp: String
+}
+
+# Union type returned by search().
+union SearchResult = PasteObject | UserObject
+
+# Mutation result types (camelCase return fields as exposed live).
+type CreatePaste { paste: PasteObject }
+type EditPaste   { paste: PasteObject }
+type DeletePaste { result: Boolean }
+type UploadPaste {
+  content: String
+  filename: String
+  result: String
+}
+type ImportPaste { result: String }
+type CreateUser  { user: UserObject }
+type Login {
+  accessToken: String
+  refreshToken: String
+}

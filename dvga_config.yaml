@@ -1,0 +1,130 @@
+# ============================================================================
+# dvga_config.yaml  —  configuration for the DVGA traffic generators
+# ----------------------------------------------------------------------------
+# Edit the values below, then run:   python3 dvga_traffic.py
+# (or point at a different file:     python3 dvga_traffic.py --config foo.yaml)
+#
+# Every comment below describes EXACTLY what changes when you edit that value.
+#
+# NOTE: DVGA (https://github.com/dolevf/Damn-Vulnerable-GraphQL-Application)
+# is a deliberately vulnerable "vulnerable-on-purpose" GraphQL app built for
+# training. Point base_url at YOUR OWN lab instance only — never at systems
+# you don't own.
+#
+# NOTE: DVGA exposes ONE endpoint (POST /graphql, batch allowed). Auth is via
+# the `me(token:)` GraphQL argument (not an Authorization header). Tokens are
+# short-lived JWTs (120 s access / 30 s refresh) — the helpers re-login on
+# demand, so you don't manage token refresh yourself.
+# ============================================================================
+
+
+# ── target ──────────────────────────────────────────────────────────────────
+target:
+  # The DVGA instance every request is sent to. Used by ALL scripts
+  # (traffic generator, cycle scripts, baseline/ and vuln/ scripts).
+  #   Change this  -> all traffic is redirected to the new host.
+  #   Must include scheme (http:// or https://). No trailing slash needed
+  #                    (it is stripped automatically if you include one).
+  #   DVGA's Flask app listens on :5013 by default (config.py WEB_PORT=5013;
+  #   docker: -p 5013:5013). Override with -e WEB_PORT=... to change it.
+  #   Examples: http://localhost:5013   |   http://dvga.internal:8080
+  base_url: "http://77.112.39.67"
+
+  # The GraphQL endpoint path. DVGA serves it at /graphql (app.py:
+  #   app.add_url_rule('/graphql', view_func=GraphQLView.as_view('graphql',
+  #   schema=schema, graphiql=True))). Leave /graphql unless you proxied it.
+  graphql_path: "/graphql"
+
+  # Gateway key (only if DVGA sits behind an API gateway that requires one).
+  # DVGA itself has no key requirement. Leave "" for direct DVGA hosts.
+  # Can also be supplied via the GATEWAY_SUBSCRIPTION_KEY env var (env wins).
+  subscription_key: ""
+  # Header name for the gateway key (default: Ocp-Apim-Subscription-Key).
+  subscription_key_header: "Ocp-Apim-Subscription-Key"
+
+
+# ── known_users ─────────────────────────────────────────────────────────────
+# DVGA seeds a fixed roster (setup.py): admin/changeme and
+# operator/password123, both under owner name DVGAUser.
+#
+# These accounts are the authenticated identities for the findings phase and
+# are also sprayed with wrong passwords by the "excessive credential
+# attempts" patterns. admin/changeme is itself a DVGA "weak password"
+# scenario target.
+known_users:
+  # One account per entry. Each needs username + password (+ email for realism).
+  #   Higher (more accounts) -> more distinct authenticated identities.
+  #   Wrong password -> that login fails; the generator keeps the ones that
+  #                    succeed (you still get the others).
+  users:
+    - username: admin
+      password: changeme
+      email: admin@blackhatgraphql.com
+    - username: operator
+      password: password123
+      email: operator@blackhatgraphql.com
+
+
+# ── run ─────────────────────────────────────────────────────────────────────
+run:
+  # Master switches for the two phases of dvga_traffic.py. At least one must be true.
+  #
+  # warmup:   true  -> generates many distinct-consumer journeys (create user
+  #                    -> login -> paste CRUD) to push the API through the
+  #                    learning period (see the warmup block).
+  #           false -> skip it (use once learning is already complete).
+  #
+  # findings: true  -> runs all three detection populations in order:
+  #                    authenticated, unauthenticated, bad-token.
+  #           false -> skip the detection patterns (e.g. warmup-only runs).
+  warmup: true
+  findings: true
+
+
+# ── warmup ──────────────────────────────────────────────────────────────────
+# Only used when run.warmup is true.
+warmup:
+  # Number of distinct-consumer journeys (each = a fresh user + login + a
+  # normal paste read/write flow under a unique identity).
+  #   Higher -> more observed consumers, advances the learning period faster,
+  #             longer runtime, more load on the lab (many new users/pastes).
+  #   Lower  -> quicker run, fewer consumers counted.
+  #   Aim at your sensor's consumer threshold.
+  consumers: 2500
+
+  # Concurrency for the warmup phase (parallel journeys).
+  #   Higher -> finishes faster, heavier burst load on DVGA.
+  #   Lower  -> gentler on the lab, slower to reach the consumer count.
+  threads: 16
+
+
+# ── findings ────────────────────────────────────────────────────────────────
+# Only used when run.findings is true.
+findings:
+  # How many times the known-user list is looped for AUTHENTICATED traffic.
+  #   Higher -> more authenticated requests/volume from the same accounts.
+  #   Lower  -> a single quick pass per user.
+  auth_rounds: 5
+
+  # Multiplier for the credential-attempt volume (single-user brute force and
+  # across-users spraying) against the login mutation. Base is ~40 attempts
+  # each; intensity 2 = ~80, etc.
+  #   Higher -> more likely to cross "excessive credential attempts"
+  #             thresholds, more login noise.
+  #   Lower  -> fewer attempts (may fall under the detection threshold).
+  intensity: 1
+
+  # Sacrificial account for the single-user brute-force pattern. This account
+  # gets sprayed with ~40 wrong passwords each run and may be throttled, so it
+  # MUST NOT be one of known_users usernames — otherwise that real user fails
+  # to obtain a token on the next run (the N-1 problem).
+  #   Keep it a plausible-but-unseeded username.
+  brute_target: "locked-target"
+
+
+# ── http ────────────────────────────────────────────────────────────────────
+http:
+  # Per-request timeout in seconds.
+  #   Higher -> waits longer on a slow/unresponsive lab before giving up.
+  #   Lower  -> fails fast (good on a healthy local lab).
+  timeout: 10.0
