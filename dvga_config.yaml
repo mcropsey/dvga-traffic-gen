@@ -28,7 +28,7 @@ target:
   #   DVGA's Flask app listens on :5013 by default (config.py WEB_PORT=5013;
   #   docker: -p 5013:5013). Override with -e WEB_PORT=... to change it.
   #   Examples: http://localhost:5013   |   http://dvga.internal:8080
-  base_url: "http://77.112.39.67"
+  base_url: "https://dvga.cropseyit.com"
 
   # The GraphQL endpoint path. DVGA serves it at /graphql (app.py:
   #   app.add_url_rule('/graphql', view_func=GraphQLView.as_view('graphql',
